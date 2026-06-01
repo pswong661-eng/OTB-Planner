@@ -201,7 +201,7 @@ def load_otb_data(source) -> dict:
     result["_meta"] = {
         "col_map": col_map,
         "collections": ordered_keys,
-        "filepath": filepath,
+        "filepath": source if isinstance(source, str) else "<uploaded>",
         "loaded_at": datetime.now().isoformat(),
     }
 

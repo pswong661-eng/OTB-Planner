@@ -727,11 +727,18 @@ def _render_upload_screen():
             st.session_state.cloud_mode       = True
             st.session_state._cache_bust      += 1
             with st.spinner("Parsing Excel…"):
-                ok = load_data()
-            if ok:
-                st.rerun()
-            else:
-                st.error("Could not parse the file. Please upload a valid OTB_v2.xlsx.")
+                try:
+                    from otb_engine import load_otb_data, build_dataframe
+                    data = load_otb_data(file_bytes)
+                    df   = build_dataframe(data, edit_year=EDIT_YEAR, ref_year=REF_YEAR)
+                    st.session_state.data        = data
+                    st.session_state.df_original = df.copy()
+                    st.session_state.df_edited   = df.copy()
+                    st.rerun()
+                except Exception as exc:
+                    import traceback
+                    st.error(f"**Parse error:** {exc}")
+                    st.code(traceback.format_exc(), language="python")
 
 
 def main():
