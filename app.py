@@ -137,7 +137,7 @@ def _cached_load_bytes(file_bytes: bytes, bust: int) -> dict:
     return load_otb_data(file_bytes)
 
 
-def load_data(filepath: str | None = None) -> bool:
+def load_data(filepath: str | None = None, silent: bool = False) -> bool:
     """Load (or re-load) data into session state.  Returns True on success."""
     try:
         if st.session_state.cloud_mode and st.session_state.uploaded_bytes:
@@ -147,7 +147,8 @@ def load_data(filepath: str | None = None) -> bool:
         else:
             fp = filepath or st.session_state.filepath
             if not os.path.exists(fp):
-                st.error(f"File not found:\n\n`{fp}`\n\nUpdate the path in the sidebar.")
+                if not silent:
+                    st.error(f"File not found:\n\n`{fp}`\n\nUpdate the path in the sidebar.")
                 return False
             data = _cached_load(fp, st.session_state._cache_bust)
 
@@ -157,7 +158,8 @@ def load_data(filepath: str | None = None) -> bool:
         st.session_state.df_edited   = df.copy()
         return True
     except Exception as exc:
-        st.error(f"Failed to parse Excel: {exc}")
+        if not silent:
+            st.error(f"Failed to parse Excel: {exc}")
         return False
 
 
@@ -697,18 +699,53 @@ def render_header():
 
 
 # ─── Main ──────────────────────────────────────────────────────────────────────
+def _render_upload_screen():
+    """Full-page upload prompt shown when no data is loaded (cloud mode)."""
+    st.markdown(
+        """
+        <div style="text-align:center;padding:60px 20px 20px">
+            <div style="font-size:52px">📊</div>
+            <h2 style="margin:12px 0 6px">OTB Planner</h2>
+            <p style="color:#666;font-size:15px">Open-to-Buy Planner — AKEMI Retail 2026</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    col = st.columns([1, 2, 1])[1]
+    with col:
+        st.markdown("#### Upload your OTB Excel file to get started")
+        uploaded = st.file_uploader(
+            "OTB_v2.xlsx",
+            type=["xlsx"],
+            key="_file_upload_main",
+            label_visibility="collapsed",
+        )
+        if uploaded is not None:
+            file_bytes = uploaded.read()
+            st.session_state.uploaded_bytes   = file_bytes
+            st.session_state.uploaded_filename = uploaded.name
+            st.session_state.cloud_mode       = True
+            st.session_state._cache_bust      += 1
+            with st.spinner("Parsing Excel…"):
+                ok = load_data()
+            if ok:
+                st.rerun()
+            else:
+                st.error("Could not parse the file. Please upload a valid OTB_v2.xlsx.")
+
+
 def main():
     _init()
 
-    # Bootstrap data
+    # Bootstrap data — try silent local load first
     if st.session_state.data is None:
-        if not load_data():
-            st.markdown(
-                "### Setup\n"
-                "Update the **Excel file path** in the sidebar, then click **Reload**."
-            )
-            render_sidebar()
-            st.stop()
+        load_data(silent=True)
+
+    # Still no data → show upload screen
+    if st.session_state.data is None:
+        render_sidebar()
+        _render_upload_screen()
+        st.stop()
 
     render_sidebar()
     render_header()
