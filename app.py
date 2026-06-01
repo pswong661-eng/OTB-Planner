@@ -120,7 +120,9 @@ def _init():
         "cloud_mode":        False,
         "uploaded_bytes":    None,
         "uploaded_filename": "OTB_v2.xlsx",
-        "download_bytes":    None,   # set after cloud save → triggers download button
+        "download_bytes":    None,
+        "_upload_hash":      None,
+        "_show_reupload":    False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -207,22 +209,35 @@ def render_sidebar():
         # --- File picker ---
         st.markdown("### 📁 Data Source")
 
-        # ── Upload (always available; activates cloud mode) ──────────────────
-        uploaded = st.file_uploader(
-            "Upload Excel file",
-            type=["xlsx"],
-            key="_file_upload",
-            help="Upload OTB_v2.xlsx — works locally and on Streamlit Cloud",
-        )
-        if uploaded is not None:
-            file_bytes = uploaded.read()
-            if file_bytes != st.session_state.uploaded_bytes:
-                st.session_state.uploaded_bytes   = file_bytes
-                st.session_state.uploaded_filename = uploaded.name
-                st.session_state.cloud_mode       = True
-                st.session_state._cache_bust      += 1
-                st.session_state.download_bytes   = None
-                load_data()
+        # ── Upload widget — only shown when NOT already loaded ───────────────
+        data_loaded = st.session_state.data is not None
+        show_uploader = (not data_loaded) or st.session_state.get("_show_reupload", False)
+
+        if show_uploader:
+            uploaded = st.file_uploader(
+                "Upload Excel file",
+                type=["xlsx"],
+                key="_file_upload",
+                help="Upload OTB_v2.xlsx — works locally and on Streamlit Cloud",
+            )
+            if uploaded is not None:
+                import hashlib
+                file_bytes = uploaded.getvalue()   # all bytes, no cursor side-effects
+                file_hash  = hashlib.md5(file_bytes[:4096]).hexdigest()  # hash first 4KB
+                if file_hash != st.session_state.get("_upload_hash"):
+                    st.session_state.uploaded_bytes    = file_bytes
+                    st.session_state.uploaded_filename = uploaded.name
+                    st.session_state["_upload_hash"]   = file_hash
+                    st.session_state.cloud_mode        = True
+                    st.session_state._cache_bust       += 1
+                    st.session_state.download_bytes    = None
+                    st.session_state["_show_reupload"] = False
+                    load_data()
+                    st.rerun()
+        elif st.session_state.cloud_mode:
+            st.caption(f"📤 **{st.session_state.uploaded_filename}**")
+            if st.button("🔄 Change file", use_container_width=True, key="_change_file_btn"):
+                st.session_state["_show_reupload"] = True
                 st.rerun()
 
         # ── Local file picker (shown only when no upload active) ─────────────
@@ -721,11 +736,14 @@ def _render_upload_screen():
             label_visibility="collapsed",
         )
         if uploaded is not None:
-            file_bytes = uploaded.read()
-            st.session_state.uploaded_bytes   = file_bytes
+            import hashlib
+            file_bytes = uploaded.getvalue()
+            file_hash  = hashlib.md5(file_bytes[:4096]).hexdigest()
+            st.session_state.uploaded_bytes    = file_bytes
             st.session_state.uploaded_filename = uploaded.name
-            st.session_state.cloud_mode       = True
-            st.session_state._cache_bust      += 1
+            st.session_state["_upload_hash"]   = file_hash
+            st.session_state.cloud_mode        = True
+            st.session_state._cache_bust       += 1
             with st.spinner("Parsing Excel…"):
                 try:
                     from otb_engine import load_otb_data, build_dataframe
