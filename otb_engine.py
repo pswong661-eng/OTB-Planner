@@ -93,9 +93,10 @@ def _detect_columns(ws) -> dict:
 
 
 # ─── Data loading ──────────────────────────────────────────────────────────────
-def load_otb_data(filepath: str) -> dict:
+def load_otb_data(source) -> dict:
     """
     Parse OTB_v2.xlsx and build an in-memory data structure.
+    `source` can be a file path (str/Path) or raw bytes (for cloud/upload mode).
 
     Return value is a dict where:
       key   = (collection, category, segment)  tuple
@@ -111,12 +112,15 @@ def load_otb_data(filepath: str) -> dict:
       }
     Plus a special "_meta" key with column map and ordered collection list.
     """
-    wb = openpyxl.load_workbook(filepath, data_only=True, read_only=True)
+    from io import BytesIO as _BytesIO
+    if isinstance(source, (bytes, bytearray)):
+        source = _BytesIO(source)
+    wb = openpyxl.load_workbook(source, data_only=True, read_only=True)
 
     if SHEET_NAME not in wb.sheetnames:
         available = ", ".join(wb.sheetnames)
         raise ValueError(
-            f"Sheet '{SHEET_NAME}' not found in {filepath}. Available: {available}"
+            f"Sheet '{SHEET_NAME}' not found. Available: {available}"
         )
 
     ws = wb[SHEET_NAME]
@@ -548,9 +552,10 @@ def validate_changes(changes: list) -> list:
 
 
 # ─── Save ──────────────────────────────────────────────────────────────────────
-def save_changes(filepath: str, changes: list, dry_run: bool = False) -> dict:
+def save_changes(source, changes: list, dry_run: bool = False) -> dict:
     """
     Write only the changed cells back to Excel, preserving all formulas.
+    `source` is either a local file path (str) or raw bytes (cloud mode).
 
     Returns:
     {
@@ -559,9 +564,13 @@ def save_changes(filepath: str, changes: list, dry_run: bool = False) -> dict:
         "errors": [str],
         "backup_path": str | None,
         "dry_run": bool,
-        "preview": [str],   (only when dry_run=True)
+        "preview": [str],       (only when dry_run=True)
+        "download_bytes": bytes, (only when source is bytes — cloud mode)
     }
     """
+    from io import BytesIO as _BytesIO
+    cloud_mode = isinstance(source, (bytes, bytearray))
+
     result: dict = {
         "success": False,
         "written": 0,
@@ -585,16 +594,18 @@ def save_changes(filepath: str, changes: list, dry_run: bool = False) -> dict:
         ]
         return result
 
-    # --- Backup first ---
-    try:
-        result["backup_path"] = backup_file(filepath)
-    except Exception as e:
-        result["errors"].append(f"Backup failed: {e}")
-        return result
+    # --- Backup (local only) ---
+    if not cloud_mode:
+        try:
+            result["backup_path"] = backup_file(source)
+        except Exception as e:
+            result["errors"].append(f"Backup failed: {e}")
+            return result
 
     # --- Write back (no data_only — preserves formulas in other cells) ---
     try:
-        wb = openpyxl.load_workbook(filepath)
+        buf = _BytesIO(source) if cloud_mode else source
+        wb = openpyxl.load_workbook(buf)
         ws = wb[SHEET_NAME]
 
         for change in changes:
@@ -602,19 +613,23 @@ def save_changes(filepath: str, changes: list, dry_run: bool = False) -> dict:
             col_idx = change["col_idx"] + 1     # 0-based → 1-based for openpyxl
             value = change["value"]
 
-            # Store 0 not None for empty cells (so formulas that reference them work)
             if value is None:
                 value = 0
-
-            # Round QTY to integer
             if "QTY" in change.get("metric", ""):
                 value = int(round(value))
 
             ws.cell(row=row_idx, column=col_idx).value = value
             result["written"] += 1
 
-        wb.save(filepath)
-        wb.close()
+        if cloud_mode:
+            out = _BytesIO()
+            wb.save(out)
+            wb.close()
+            result["download_bytes"] = out.getvalue()
+        else:
+            wb.save(source)
+            wb.close()
+
         result["success"] = True
 
     except PermissionError:

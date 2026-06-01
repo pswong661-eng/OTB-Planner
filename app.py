@@ -115,7 +115,12 @@ def _init():
         "filter_segment":    "All",
         "filter_collection": "",
         "show_ref":          False,
-        "notify":            [],    # list of (kind, message) to display once
+        "notify":            [],
+        # cloud / upload mode
+        "cloud_mode":        False,
+        "uploaded_bytes":    None,
+        "uploaded_filename": "OTB_v2.xlsx",
+        "download_bytes":    None,   # set after cloud save → triggers download button
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -127,16 +132,26 @@ def _init():
 def _cached_load(filepath: str, bust: int) -> dict:
     return load_otb_data(filepath)
 
+@st.cache_data(show_spinner="⏳  Loading OTB data from Excel…")
+def _cached_load_bytes(file_bytes: bytes, bust: int) -> dict:
+    return load_otb_data(file_bytes)
+
 
 def load_data(filepath: str | None = None) -> bool:
     """Load (or re-load) data into session state.  Returns True on success."""
-    fp = filepath or st.session_state.filepath
-    if not os.path.exists(fp):
-        st.error(f"File not found:\n\n`{fp}`\n\nUpdate the path in the sidebar.")
-        return False
     try:
-        data = _cached_load(fp, st.session_state._cache_bust)
-        df   = build_dataframe(data, edit_year=EDIT_YEAR, ref_year=REF_YEAR)
+        if st.session_state.cloud_mode and st.session_state.uploaded_bytes:
+            data = _cached_load_bytes(
+                st.session_state.uploaded_bytes, st.session_state._cache_bust
+            )
+        else:
+            fp = filepath or st.session_state.filepath
+            if not os.path.exists(fp):
+                st.error(f"File not found:\n\n`{fp}`\n\nUpdate the path in the sidebar.")
+                return False
+            data = _cached_load(fp, st.session_state._cache_bust)
+
+        df = build_dataframe(data, edit_year=EDIT_YEAR, ref_year=REF_YEAR)
         st.session_state.data        = data
         st.session_state.df_original = df.copy()
         st.session_state.df_edited   = df.copy()
@@ -190,41 +205,67 @@ def render_sidebar():
         # --- File picker ---
         st.markdown("### 📁 Data Source")
 
-        xlsx_files = _discover_xlsx()
-        cur = st.session_state.filepath
-
-        # Build selectbox options: discovered files + "Enter path manually"
-        MANUAL = "✏️  Enter path manually…"
-        options = xlsx_files + [MANUAL]
-        default_idx = options.index(cur) if cur in options else len(options) - 1
-
-        chosen = st.selectbox(
-            "Select Excel file",
-            options,
-            index=default_idx,
-            key="_fp_select",
-            format_func=lambda p: os.path.basename(p) if p != MANUAL else MANUAL,
-            help="Scans common folders for .xlsx files",
+        # ── Upload (always available; activates cloud mode) ──────────────────
+        uploaded = st.file_uploader(
+            "Upload Excel file",
+            type=["xlsx"],
+            key="_file_upload",
+            help="Upload OTB_v2.xlsx — works locally and on Streamlit Cloud",
         )
+        if uploaded is not None:
+            file_bytes = uploaded.read()
+            if file_bytes != st.session_state.uploaded_bytes:
+                st.session_state.uploaded_bytes   = file_bytes
+                st.session_state.uploaded_filename = uploaded.name
+                st.session_state.cloud_mode       = True
+                st.session_state._cache_bust      += 1
+                st.session_state.download_bytes   = None
+                load_data()
+                st.rerun()
 
-        if chosen == MANUAL:
-            new_fp = st.text_input(
-                "File path",
-                value=cur,
-                key="_fp_input",
-                placeholder=r"C:\...\OTB_v2.xlsx",
+        # ── Local file picker (shown only when no upload active) ─────────────
+        if not st.session_state.cloud_mode:
+            xlsx_files = _discover_xlsx()
+            cur = st.session_state.filepath
+            MANUAL = "✏️  Enter path manually…"
+            options = xlsx_files + [MANUAL]
+            default_idx = options.index(cur) if cur in options else len(options) - 1
+
+            chosen = st.selectbox(
+                "…or select local file",
+                options,
+                index=default_idx,
+                key="_fp_select",
+                format_func=lambda p: os.path.basename(p) if p != MANUAL else MANUAL,
+                help="Scans common folders for .xlsx files",
             )
-        else:
-            new_fp = chosen
-            st.caption(f"`{new_fp}`")
+            if chosen == MANUAL:
+                new_fp = st.text_input(
+                    "File path",
+                    value=cur,
+                    key="_fp_input",
+                    placeholder=r"C:\...\OTB_v2.xlsx",
+                )
+            else:
+                new_fp = chosen
+                st.caption(f"`{new_fp}`")
 
-        if new_fp and new_fp != cur:
-            st.session_state.filepath    = new_fp
-            st.session_state._cache_bust += 1
-            st.rerun()
+            if new_fp and new_fp != cur:
+                st.session_state.filepath    = new_fp
+                st.session_state._cache_bust += 1
+                st.rerun()
+        else:
+            st.caption(f"📤 Uploaded: **{st.session_state.uploaded_filename}**")
+            if st.button("✖ Clear upload", use_container_width=True):
+                st.session_state.cloud_mode      = False
+                st.session_state.uploaded_bytes  = None
+                st.session_state.download_bytes  = None
+                st.session_state._cache_bust     += 1
+                st.rerun()
 
         if st.button("🔄 Reload", use_container_width=True):
             st.session_state._cache_bust += 1
+            st.session_state.download_bytes = None
             load_data()
             st.rerun()
 
@@ -311,26 +352,39 @@ def handle_save():
             toast_error(f"Validation: {e}")
         return
 
+    source = (st.session_state.uploaded_bytes
+              if st.session_state.cloud_mode
+              else st.session_state.filepath)
+
     if st.session_state.dry_run:
-        result = save_changes(st.session_state.filepath, changes, dry_run=True)
+        result = save_changes(source, changes, dry_run=True)
         toast_warning(f"**Dry-Run** — {result['written']} cell(s) would be written:")
         for line in result.get("preview", []):
             st.code(line, language=None)
         return
 
-    result = save_changes(st.session_state.filepath, changes, dry_run=False)
+    result = save_changes(source, changes, dry_run=False)
 
     if result["success"]:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         st.session_state.last_saved = ts
-        toast_success(
-            f"Saved **{result['written']}** cell(s) to `OTB_v2.xlsx`  —  {ts}  \n"
-            f"<small>Backup: `{result['backup_path']}`</small>"
-        )
-        # Reload to reset dirty state
-        st.session_state._cache_bust += 1
-        load_data()
-        st.rerun()
+
+        if st.session_state.cloud_mode:
+            # Store updated bytes — download button rendered in render_header
+            st.session_state.uploaded_bytes  = result["download_bytes"]
+            st.session_state.download_bytes  = result["download_bytes"]
+            st.session_state._cache_bust     += 1
+            load_data()
+            toast_success(f"✅ **{result['written']}** cell(s) applied — click **Download Excel** to save the file.")
+            st.rerun()
+        else:
+            toast_success(
+                f"Saved **{result['written']}** cell(s) to `OTB_v2.xlsx`  —  {ts}  \n"
+                f"<small>Backup: `{result['backup_path']}`</small>"
+            )
+            st.session_state._cache_bust += 1
+            load_data()
+            st.rerun()
     else:
         for e in result["errors"]:
             toast_error(e)
@@ -616,14 +670,30 @@ def render_header():
         '</div>'
     )
 
-    col_title, col_btn = st.columns([4, 1])
+    col_title, col_btn, col_dl = st.columns([4, 1, 1])
     with col_title:
         st.markdown(header_html, unsafe_allow_html=True)
     with col_btn:
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("💾 Save to Excel", type="primary",
-                     use_container_width=True, key="save_btn"):
+        label = "💾 Apply Changes" if st.session_state.cloud_mode else "💾 Save to Excel"
+        if st.button(label, type="primary", use_container_width=True, key="save_btn"):
             handle_save()
+    with col_dl:
+        st.markdown("<br>", unsafe_allow_html=True)
+        dl_bytes = st.session_state.get("download_bytes")
+        if st.session_state.cloud_mode and dl_bytes:
+            st.download_button(
+                "⬇️ Download Excel",
+                data=dl_bytes,
+                file_name=st.session_state.uploaded_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="dl_btn",
+            )
+        elif st.session_state.cloud_mode:
+            st.button("⬇️ Download Excel", disabled=True,
+                      use_container_width=True, key="dl_btn_off",
+                      help="Apply changes first to enable download")
 
 
 # ─── Main ──────────────────────────────────────────────────────────────────────
