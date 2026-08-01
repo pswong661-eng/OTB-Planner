@@ -9,19 +9,19 @@ from otb_engine import MONTHS, METRIC_DISPLAY, EDITABLE_METRICS
 
 # ─── Color palette ─────────────────────────────────────────────────────────────
 METRIC_COLORS = {
-    "Planned Purchases USD":        "#1565C0",   # deep blue
-    "Comitted Purchase USD":        "#2E7D32",   # deep green
-    "Act. Sale USD":                "#7B1FA2",   # purple
-    "Act. Sale QTY":                "#00838F",   # teal
-    "Act. Goods Received QTY":      "#37474F",   # dark gray
-    "Act. Stock Holding Month-USD": "#78909C",   # blue-gray (display only)
-    "Act. Stock Holding Month-QTY": "#90A4AE",   # light blue-gray (display only)
+    "Planned Purchases USD":        "#2563EB",
+    "Comitted Purchase USD":        "#0F766E",
+    "Act. Sale USD":                "#7C3AED",
+    "Act. Sale QTY":                "#0891B2",
+    "Act. Goods Received QTY":      "#475569",
+    "Act. Stock Holding Month-USD": "#64748B",
+    "Act. Stock Holding Month-QTY": "#94A3B8",
 }
 
 CATEGORY_COLORS = {
-    "Bdln":   "#1976D2",
-    "BedAcc": "#43A047",
-    "Other":  "#FB8C00",
+    "Bdln":   "#2563EB",
+    "BedAcc": "#0F766E",
+    "Other":  "#D97706",
 }
 
 PLOTLY_FONT = dict(family="Inter, system-ui, -apple-system, sans-serif", size=12)
@@ -32,19 +32,27 @@ GLOBAL_CSS = """
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
-html, body, [class*="css"] {
+html, body, [class*="css"], .stApp {
     font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    color: #0F172A;
+}
+.stApp {
+    background: #F8FAFC;
+}
+.block-container {
+    max-width: 1440px;
+    padding-top: 1rem !important;
+    padding-bottom: 2rem;
 }
 
-/* ── Sidebar ─────────────────────────────────────────────────────── */
 section[data-testid="stSidebar"] {
-    background: #1a2744 !important;
+    background: #0F172A !important;
 }
 section[data-testid="stSidebar"] .stMarkdown,
 section[data-testid="stSidebar"] label,
 section[data-testid="stSidebar"] p,
 section[data-testid="stSidebar"] small {
-    color: #d4daf0 !important;
+    color: #CBD5E1 !important;
 }
 section[data-testid="stSidebar"] h1,
 section[data-testid="stSidebar"] h2,
@@ -52,124 +60,191 @@ section[data-testid="stSidebar"] h3 {
     color: #ffffff !important;
 }
 section[data-testid="stSidebar"] .stSelectbox > div > div {
-    background: #253563 !important;
+    background: #1E293B !important;
     color: white !important;
-    border-color: #3d5a99 !important;
+    border-color: #334155 !important;
 }
 section[data-testid="stSidebar"] .stTextInput input {
-    background: #253563 !important;
+    background: #1E293B !important;
     color: white !important;
-    border-color: #3d5a99 !important;
+    border-color: #334155 !important;
 }
 section[data-testid="stSidebar"] .stButton button {
-    background: #2d4080;
+    background: #1E293B;
     color: white;
-    border: 1px solid #3d5a99;
+    border: 1px solid #334155;
+}
+div.stButton > button[kind="primary"],
+div.stDownloadButton > button[kind="primary"],
+button[data-testid="stBaseButton-primary"],
+[data-testid="stBaseButton-primary"] {
+    background: #2563EB !important;
+    border-color: #2563EB !important;
+    color: white !important;
+}
+div.stButton > button[kind="primary"]:hover,
+div.stDownloadButton > button[kind="primary"]:hover,
+button[data-testid="stBaseButton-primary"]:hover,
+[data-testid="stBaseButton-primary"]:hover {
+    background: #1D4ED8 !important;
+    border-color: #1D4ED8 !important;
+    color: white !important;
 }
 
-/* ── KPI cards ───────────────────────────────────────────────────── */
 .kpi-card {
     background: white;
-    border: 1px solid #e8eaf0;
-    border-radius: 12px;
-    padding: 18px 20px;
-    box-shadow: 0 2px 12px rgba(26,39,68,0.07);
-    text-align: center;
-    transition: box-shadow 0.2s;
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+    padding: 16px 18px;
+    box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+    text-align: left;
 }
-.kpi-card:hover { box-shadow: 0 4px 20px rgba(26,39,68,0.13); }
 .kpi-label {
-    font-size: 10.5px;
-    color: #888;
+    font-size: 11px;
+    color: #64748B;
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.7px;
+    letter-spacing: 0;
     margin-bottom: 6px;
 }
 .kpi-value {
-    font-size: 28px;
+    font-size: 24px;
     font-weight: 700;
-    color: #1a2744;
+    color: #0F172A;
     line-height: 1.1;
 }
 .kpi-subtext {
-    font-size: 11px;
-    color: #aaa;
+    font-size: 12px;
+    color: #64748B;
     margin-top: 4px;
 }
-.kpi-accent { color: #1976D2; }
+.kpi-accent { color: #2563EB; }
 
-/* ── Metric badges ───────────────────────────────────────────────── */
 .badge {
     display: inline-block;
-    border-radius: 5px;
-    padding: 2px 9px;
+    border-radius: 6px;
+    padding: 3px 9px;
     font-size: 11px;
     font-weight: 600;
     margin: 3px 0;
 }
-.badge-blue   { background:#E3F2FD; color:#1565C0; }
-.badge-green  { background:#E8F5E9; color:#2E7D32; }
-.badge-orange { background:#FFF3E0; color:#E65100; }
-.badge-purple { background:#F3E5F5; color:#7B1FA2; }
-.badge-teal   { background:#E0F7FA; color:#00838F; }
-.badge-gray   { background:#ECEFF1; color:#37474F; }
+.badge-blue   { background:#EFF6FF; color:#1D4ED8; }
+.badge-green  { background:#F0FDFA; color:#0F766E; }
+.badge-orange { background:#FFF7ED; color:#C2410C; }
+.badge-purple { background:#F5F3FF; color:#6D28D9; }
+.badge-teal   { background:#ECFEFF; color:#0E7490; }
+.badge-gray   { background:#F1F5F9; color:#475569; }
 
-/* ── Toast notifications ─────────────────────────────────────────── */
 .toast-success {
-    background:#E8F5E9; border-left:4px solid #4CAF50;
-    border-radius:6px; padding:12px 18px; margin:8px 0;
+    background:#F0FDF4; border-left:4px solid #16A34A;
+    border-radius:8px; padding:12px 18px; margin:8px 0;
     font-size: 14px;
 }
 .toast-error {
-    background:#FFEBEE; border-left:4px solid #F44336;
-    border-radius:6px; padding:12px 18px; margin:8px 0;
+    background:#FEF2F2; border-left:4px solid #DC2626;
+    border-radius:8px; padding:12px 18px; margin:8px 0;
     font-size: 14px;
 }
 .toast-info {
-    background:#E3F2FD; border-left:4px solid #2196F3;
-    border-radius:6px; padding:12px 18px; margin:8px 0;
+    background:#EFF6FF; border-left:4px solid #2563EB;
+    border-radius:8px; padding:12px 18px; margin:8px 0;
     font-size: 14px;
 }
 .toast-warning {
-    background:#FFF8E1; border-left:4px solid #FFC107;
-    border-radius:6px; padding:12px 18px; margin:8px 0;
+    background:#FFFBEB; border-left:4px solid #D97706;
+    border-radius:8px; padding:12px 18px; margin:8px 0;
     font-size: 14px;
 }
 
-/* ── Page layout ─────────────────────────────────────────────────── */
-.block-container { padding-top: 0.75rem !important; }
 .otb-header {
-    background: linear-gradient(90deg, #1a2744 0%, #2d4080 100%);
-    color: white;
-    padding: 14px 24px;
-    border-radius: 10px;
-    margin-bottom: 12px;
+    background: white;
+    color: #0F172A;
+    padding: 18px 20px;
+    border-radius: 8px;
+    border: 1px solid #E2E8F0;
+    margin-bottom: 14px;
+    box-shadow: 0 1px 2px rgba(15,23,42,0.04);
 }
-.otb-header h2 { margin: 0; font-size: 22px; font-weight: 700; }
-.otb-header small { color: #a8b8d8; font-size: 12px; }
+.otb-header h2 { margin: 0; font-size: 24px; font-weight: 700; letter-spacing: 0; }
+.otb-header small { color: #64748B; font-size: 12px; }
 
-/* ── Section headers ─────────────────────────────────────────────── */
 .section-title {
-    font-size: 15px;
+    font-size: 16px;
     font-weight: 600;
-    color: #1a2744;
-    margin: 14px 0 8px 0;
-    padding-bottom: 5px;
-    border-bottom: 2px solid #e8eaf0;
+    color: #0F172A;
+    margin: 16px 0 8px 0;
 }
 
-/* ── Dirty indicator ─────────────────────────────────────────────── */
 .dirty-badge {
     display: inline-block;
-    background: #FFF3E0;
-    color: #E65100;
-    border: 1px solid #FFB74D;
-    border-radius: 12px;
-    padding: 2px 10px;
+    background: #FFF7ED;
+    color: #C2410C;
+    border: 1px solid #FED7AA;
+    border-radius: 999px;
+    padding: 3px 10px;
     font-size: 12px;
     font-weight: 600;
     margin-left: 8px;
+}
+.source-pill {
+    display: inline-block;
+    background: #F8FAFC;
+    color: #334155;
+    border: 1px solid #E2E8F0;
+    border-radius: 999px;
+    padding: 5px 10px;
+    font-size: 12px;
+    font-weight: 600;
+}
+.workbench-panel {
+    background: white;
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+    padding: 16px;
+    box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+}
+.exception-item {
+    background: white;
+    border: 1px solid #E2E8F0;
+    border-left: 4px solid #D97706;
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+}
+.exception-high { border-left-color: #DC2626; }
+.exception-medium { border-left-color: #D97706; }
+.exception-low { border-left-color: #2563EB; }
+.exception-title {
+    color: #0F172A;
+    font-size: 14px;
+    font-weight: 700;
+}
+.exception-meta {
+    color: #64748B;
+    font-size: 12px;
+    margin-top: 2px;
+}
+.stTabs [data-baseweb="tab-list"] {
+    gap: 4px;
+}
+.stTabs [data-baseweb="tab"] {
+    height: 38px;
+    padding: 0 14px;
+    border-radius: 8px 8px 0 0;
+    color: #334155;
+    font-size: 13px;
+    font-weight: 600;
+}
+.stTabs [aria-selected="true"] {
+    color: #2563EB !important;
+}
+.stTabs [data-baseweb="tab-highlight"] {
+    background-color: #2563EB !important;
+}
+div[data-testid="stDataFrame"] {
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+    overflow: hidden;
 }
 </style>
 """
@@ -181,8 +256,8 @@ def inject_css():
 
 # ─── KPI Cards ─────────────────────────────────────────────────────────────────
 def render_kpi_cards(kpis: dict):
-    """Render 4 KPI metric cards in a row."""
-    c1, c2, c3, c4 = st.columns(4)
+    """Render KPI metric cards in a row."""
+    c1, c2, c3, c4, c5 = st.columns(5)
 
     def _card(col, label, value_str, subtext, accent=False):
         cls = "kpi-accent" if accent else ""
@@ -196,27 +271,37 @@ def render_kpi_cards(kpis: dict):
         )
 
     _card(c1,
-          "Total Planned Purchase 2026",
+          "Planned Buy",
           f"${kpis['total_planned']:,.0f}",
-          "Across all 42 collections")
+          "2026 open-to-buy plan")
 
     _card(c2,
-          "Total Act. Sale USD 2026",
+          "Actual Sales",
           f"${kpis['total_sale_usd']:,.0f}",
-          f"QTY sold: {kpis['total_sale_qty']:,.0f} units")
+          f"{kpis['total_sale_qty']:,.0f} units sold")
 
     _card(c3,
-          "Goods Received QTY 2026",
+          "Received QTY",
           f"{kpis['total_qty_received']:,.0f} units",
-          "Across all collections")
+          "Goods received")
 
     util = (kpis["total_sale_usd"] / kpis["total_planned"] * 100) if kpis["total_planned"] > 0 else 0.0
-    util_color = "#2E7D32" if util >= 60 else ("#FB8C00" if util >= 30 else "#C62828")
+    util_color = "#0F766E" if util >= 60 else ("#D97706" if util >= 30 else "#DC2626")
     c4.markdown(
         f"""<div class="kpi-card">
-                <div class="kpi-label">Purchase Utilisation</div>
+                <div class="kpi-label">Sell-through proxy</div>
                 <div class="kpi-value" style="color:{util_color}">{util:.1f}%</div>
-                <div class="kpi-subtext">Act. Sale ÷ Planned Purchase</div>
+                <div class="kpi-subtext">Sales divided by planned buy</div>
+            </div>""",
+        unsafe_allow_html=True,
+    )
+    remaining = kpis["total_planned"] - kpis["total_sale_usd"]
+    rem_color = "#0F766E" if remaining >= 0 else "#DC2626"
+    c5.markdown(
+        f"""<div class="kpi-card">
+                <div class="kpi-label">Remaining OTB</div>
+                <div class="kpi-value" style="color:{rem_color}">${remaining:,.0f}</div>
+                <div class="kpi-subtext">Planned buy less actual sales</div>
             </div>""",
         unsafe_allow_html=True,
     )
@@ -237,7 +322,7 @@ def planned_monthly_chart(kpis: dict, year: str = "2026") -> go.Figure:
     ))
 
     fig.update_layout(
-        title=dict(text=f"📅  Planned Purchase by Month ({year})", font=dict(size=14)),
+        title=dict(text=f"Monthly Planned Buy ({year})", font=dict(size=14)),
         height=290,
         margin=dict(l=10, r=10, t=40, b=10),
         yaxis=dict(tickprefix="$", tickformat=",", gridcolor="#f0f2f5",
@@ -265,7 +350,7 @@ def planned_by_category_chart(kpis: dict) -> go.Figure:
         values=values,
         hole=0.62,
         marker=dict(colors=colors, line=dict(color="white", width=2)),
-        textinfo="label+percent",
+        textinfo="none",
         textfont=dict(size=12),
         hovertemplate="<b>%{label}</b><br>$%{value:,.0f} (%{percent})<extra></extra>",
     ))
@@ -279,9 +364,9 @@ def planned_by_category_chart(kpis: dict) -> go.Figure:
     )
 
     fig.update_layout(
-        title=dict(text="📦  Planned Purchase by Category", font=dict(size=14)),
+        title=dict(text="Planned Buy by Category", font=dict(size=14)),
         height=290,
-        margin=dict(l=10, r=10, t=40, b=10),
+        margin=dict(l=0, r=0, t=40, b=10),
         showlegend=True,
         legend=dict(orientation="v", font=dict(size=11)),
         paper_bgcolor="white",
@@ -342,16 +427,16 @@ def metric_badge(metric_key: str) -> str:
 
 # ─── Toast helpers ─────────────────────────────────────────────────────────────
 def toast_success(msg: str):
-    st.markdown(f'<div class="toast-success">✅ {msg}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="toast-success">{msg}</div>', unsafe_allow_html=True)
 
 
 def toast_error(msg: str):
-    st.markdown(f'<div class="toast-error">❌ {msg}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="toast-error">{msg}</div>', unsafe_allow_html=True)
 
 
 def toast_info(msg: str):
-    st.markdown(f'<div class="toast-info">ℹ️ {msg}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="toast-info">{msg}</div>', unsafe_allow_html=True)
 
 
 def toast_warning(msg: str):
-    st.markdown(f'<div class="toast-warning">⚠️ {msg}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="toast-warning">{msg}</div>', unsafe_allow_html=True)

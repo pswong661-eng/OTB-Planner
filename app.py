@@ -7,9 +7,12 @@ Run with:
 
 import glob
 import os
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 import pandas as pd
 import streamlit as st
@@ -46,6 +49,10 @@ from components import (
 # ─── Configuration ─────────────────────────────────────────────────────────────
 EDIT_YEAR = "2026"
 REF_YEAR  = "2025"
+DEFAULT_GOOGLE_SHEET_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1pOe_qlQJOXwj8Fv0aUZJUz_Z3UCiRh4z/edit"
+)
 
 # Try common locations; user can override in sidebar
 _CANDIDATE_PATHS = [
@@ -94,7 +101,7 @@ def _discover_xlsx() -> list[str]:
 # ─── Page setup ────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="OTB Planner",
-    page_icon="📊",
+    page_icon="OTB",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -123,6 +130,8 @@ def _init():
         "download_bytes":    None,
         "_upload_hash":      None,
         "_show_reupload":    False,
+        "google_sheet_url":  DEFAULT_GOOGLE_SHEET_URL,
+        "source_label":      "",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -137,6 +146,32 @@ def _cached_load(filepath: str, bust: int) -> dict:
 @st.cache_data(show_spinner="⏳  Loading OTB data from Excel…")
 def _cached_load_bytes(file_bytes: bytes, bust: int) -> dict:
     return load_otb_data(file_bytes)
+
+
+def _google_sheet_export_url(url: str) -> str:
+    """Convert a Google Sheets share URL into an xlsx export URL."""
+    match = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", url)
+    if not match:
+        raise ValueError("This does not look like a Google Sheets URL.")
+    return f"https://docs.google.com/spreadsheets/d/{match.group(1)}/export?format=xlsx"
+
+
+def _download_google_sheet(url: str) -> tuple[bytes, str]:
+    export_url = _google_sheet_export_url(url)
+    req = Request(export_url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urlopen(req, timeout=30) as response:
+            content_type = response.headers.get("Content-Type", "")
+            payload = response.read()
+    except URLError as exc:
+        raise RuntimeError(f"Could not download the Google Sheet: {exc}") from exc
+
+    if b"<html" in payload[:500].lower() or "text/html" in content_type:
+        raise RuntimeError(
+            "Google returned an HTML page instead of an Excel file. "
+            "Set the Sheet sharing to anyone with the link can view, or upload the exported xlsx."
+        )
+    return payload, "Google Sheet export.xlsx"
 
 
 def load_data(filepath: str | None = None, silent: bool = False) -> bool:
@@ -199,15 +234,174 @@ def _pending_changes() -> list:
     )
 
 
+def _fmt_money(value: float) -> str:
+    value = float(value or 0)
+    abs_value = abs(value)
+    if abs_value >= 1_000_000:
+        return f"${value / 1_000_000:.1f}M"
+    if abs_value >= 1_000:
+        return f"${value / 1_000:.0f}K"
+    return f"${value:,.0f}"
+
+
+def _current_kpis(df: pd.DataFrame) -> dict:
+    if df is None or df.empty:
+        return compute_kpis(st.session_state.data, edit_year=EDIT_YEAR)
+
+    def total(metric: str) -> float:
+        rows = df[df["_metric"] == metric]
+        if rows.empty:
+            return 0.0
+        return float(rows[MONTH_COLS_26].sum().sum())
+
+    planned_by_month = {
+        month: float(df[df["_metric"] == "Planned Purchases USD"][f"{month}'{EY2}"].sum())
+        for month in MONTHS
+    }
+    planned_by_category = (
+        df[df["_metric"] == "Planned Purchases USD"]
+        .groupby("Category")[MONTH_COLS_26]
+        .sum()
+        .sum(axis=1)
+        .to_dict()
+    )
+
+    return {
+        "total_planned": total("Planned Purchases USD"),
+        "total_sale_usd": total("Act. Sale USD"),
+        "total_sale_qty": total("Act. Sale QTY"),
+        "total_qty_received": total("Act. Goods Received QTY"),
+        "monthly_planned": planned_by_month,
+        "planned_by_category": planned_by_category,
+    }
+
+
+def _metric_total_for_key(key: tuple, metric: str) -> float:
+    entry = st.session_state.data.get(key, {}).get(metric, {})
+    vals = entry.get(EDIT_YEAR, {}) if isinstance(entry, dict) else {}
+    return float(sum((vals.get(month) or 0) for month in MONTHS))
+
+
+def _exception_frame(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["Severity", "Collection", "Category", "Segment", "Issue", "Detail"])
+
+    records = []
+    for key in st.session_state.data["_meta"]["collections"]:
+        collection, category, segment = key
+        subset = df[
+            (df["Collection"] == collection)
+            & (df["Category"] == (category or ""))
+            & (df["Segment"] == (segment or ""))
+        ]
+
+        def df_total(metric: str) -> float:
+            rows = subset[subset["_metric"] == metric]
+            return float(rows[MONTH_COLS_26].sum().sum()) if not rows.empty else 0.0
+
+        planned = df_total("Planned Purchases USD")
+        sales = df_total("Act. Sale USD")
+        received_qty = df_total("Act. Goods Received QTY")
+        committed = _metric_total_for_key(key, "Comitted Purchase USD")
+        stock_usd_rows = subset[subset["_metric"] == "Act. Stock Holding Month-USD"]
+        avg_stock_usd = (
+            float(stock_usd_rows[MONTH_COLS_26].replace(0, pd.NA).mean(axis=1).fillna(0).iloc[0])
+            if not stock_usd_rows.empty else 0.0
+        )
+
+        if planned <= 0 and sales > 0:
+            records.append({
+                "Severity": "High",
+                "Collection": collection,
+                "Category": category or "",
+                "Segment": segment or "",
+                "Issue": "Sales exist but planned buy is zero",
+                "Detail": f"Actual sales {_fmt_money(sales)} with no planned purchase.",
+            })
+        if committed > planned and committed > 0:
+            records.append({
+                "Severity": "High",
+                "Collection": collection,
+                "Category": category or "",
+                "Segment": segment or "",
+                "Issue": "Committed purchase exceeds plan",
+                "Detail": f"Committed {_fmt_money(committed)} vs planned {_fmt_money(planned)}.",
+            })
+        if planned > 0 and sales <= 0 and received_qty <= 0:
+            records.append({
+                "Severity": "Medium",
+                "Collection": collection,
+                "Category": category or "",
+                "Segment": segment or "",
+                "Issue": "Plan has no sales or receiving signal",
+                "Detail": f"Planned {_fmt_money(planned)} but sales and received QTY are zero.",
+            })
+        if avg_stock_usd >= 9:
+            records.append({
+                "Severity": "Medium",
+                "Collection": collection,
+                "Category": category or "",
+                "Segment": segment or "",
+                "Issue": "High stock cover",
+                "Detail": f"Average stock holding is {avg_stock_usd:.1f} months.",
+            })
+
+    return pd.DataFrame(records)
+
+
+def _source_summary() -> str:
+    if st.session_state.cloud_mode:
+        label = st.session_state.source_label or "Uploaded Excel"
+        return f"{label}: {st.session_state.uploaded_filename}"
+    return f"Local Excel: {os.path.basename(st.session_state.filepath)}"
+
+
+def _try_load_default_google_sheet() -> bool:
+    url = st.session_state.get("google_sheet_url", "").strip()
+    if not url:
+        return False
+    try:
+        file_bytes, filename = _download_google_sheet(url)
+        st.session_state.uploaded_bytes = file_bytes
+        st.session_state.uploaded_filename = filename
+        st.session_state.source_label = "Google Sheet"
+        st.session_state.cloud_mode = True
+        st.session_state.download_bytes = None
+        st.session_state._cache_bust += 1
+        return load_data(silent=True)
+    except Exception:
+        return False
+
+
 # ─── Sidebar ───────────────────────────────────────────────────────────────────
 def render_sidebar():
     with st.sidebar:
-        st.markdown("## 📊 OTB Planner")
-        st.caption(f"Edit Year: **{EDIT_YEAR}** | Ref: **{REF_YEAR}**")
+        st.markdown("## OTB Planner")
+        st.caption(f"Planning year **{EDIT_YEAR}** · reference **{REF_YEAR}**")
         st.markdown("---")
 
         # --- File picker ---
-        st.markdown("### 📁 Data Source")
+        st.markdown("### Source")
+        google_url = st.text_input(
+            "Google Sheet URL",
+            key="google_sheet_url",
+            placeholder="https://docs.google.com/spreadsheets/d/...",
+            help="The sheet must be shared as anyone with the link can view.",
+        )
+        if st.button("Load Google Sheet", use_container_width=True, key="load_google_sheet"):
+            try:
+                with st.spinner("Downloading Google Sheet as Excel..."):
+                    file_bytes, filename = _download_google_sheet(google_url)
+                st.session_state.uploaded_bytes = file_bytes
+                st.session_state.uploaded_filename = filename
+                st.session_state.source_label = "Google Sheet"
+                st.session_state.cloud_mode = True
+                st.session_state.download_bytes = None
+                st.session_state._cache_bust += 1
+                load_data()
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
 
         # ── Upload widget — only shown when NOT already loaded ───────────────
         data_loaded = st.session_state.data is not None
@@ -227,6 +421,7 @@ def render_sidebar():
                 if file_hash != st.session_state.get("_upload_hash"):
                     st.session_state.uploaded_bytes    = file_bytes
                     st.session_state.uploaded_filename = uploaded.name
+                    st.session_state.source_label      = "Uploaded Excel"
                     st.session_state["_upload_hash"]   = file_hash
                     st.session_state.cloud_mode        = True
                     st.session_state._cache_bust       += 1
@@ -235,8 +430,8 @@ def render_sidebar():
                     load_data()
                     st.rerun()
         elif st.session_state.cloud_mode:
-            st.caption(f"📤 **{st.session_state.uploaded_filename}**")
-            if st.button("🔄 Change file", use_container_width=True, key="_change_file_btn"):
+            st.caption(f"Current: **{st.session_state.uploaded_filename}**")
+            if st.button("Change file", use_container_width=True, key="_change_file_btn"):
                 st.session_state["_show_reupload"] = True
                 st.rerun()
 
@@ -244,7 +439,7 @@ def render_sidebar():
         if not st.session_state.cloud_mode:
             xlsx_files = _discover_xlsx()
             cur = st.session_state.filepath
-            MANUAL = "✏️  Enter path manually…"
+            MANUAL = "Enter path manually..."
             options = xlsx_files + [MANUAL]
             default_idx = options.index(cur) if cur in options else len(options) - 1
 
@@ -272,15 +467,15 @@ def render_sidebar():
                 st.session_state._cache_bust += 1
                 st.rerun()
         else:
-            st.caption(f"📤 Uploaded: **{st.session_state.uploaded_filename}**")
-            if st.button("✖ Clear upload", use_container_width=True):
+            if st.button("Clear source", use_container_width=True):
                 st.session_state.cloud_mode      = False
                 st.session_state.uploaded_bytes  = None
                 st.session_state.download_bytes  = None
+                st.session_state.source_label     = ""
                 st.session_state._cache_bust     += 1
                 st.rerun()
 
-        if st.button("🔄 Reload", use_container_width=True):
+        if st.button("Reload source", use_container_width=True):
             st.session_state._cache_bust += 1
             st.session_state.download_bytes = None
             load_data()
@@ -288,15 +483,15 @@ def render_sidebar():
 
         # --- Dry-run toggle ---
         st.markdown("---")
-        st.markdown("### ⚙️ Options")
+        st.markdown("### Options")
         st.toggle(
-            "Dry-Run Mode",
+            "Dry-run mode",
             value=st.session_state.dry_run,
             key="dry_run",
             help="Preview what would be written without touching the file.",
         )
         show_ref = st.toggle(
-            "Show 2025 Reference Columns",
+            "Show 2025 reference columns",
             value=st.session_state.show_ref,
             key="show_ref",
             help="Append read-only 2025 actuals to the right of the table.",
@@ -306,7 +501,7 @@ def render_sidebar():
         df = st.session_state.df_edited
         if df is not None and not df.empty:
             st.markdown("---")
-            st.markdown("### 🔍 Filters")
+            st.markdown("### Filters")
 
             cats = ["All"] + sorted(df["Category"].dropna().unique())
             cat_val = st.session_state.filter_category
@@ -348,7 +543,7 @@ def render_sidebar():
         changes = _pending_changes()
         if changes:
             st.markdown(
-                f'<span class="dirty-badge">✏️ {len(changes)} unsaved change(s)</span>',
+                f'<span class="dirty-badge">{len(changes)} unsaved change(s)</span>',
                 unsafe_allow_html=True,
             )
         if st.session_state.last_saved:
@@ -392,7 +587,7 @@ def handle_save():
             st.session_state.download_bytes  = result["download_bytes"]
             st.session_state._cache_bust     += 1
             load_data()
-            toast_success(f"✅ **{result['written']}** cell(s) applied — click **Download Excel** to save the file.")
+            toast_success(f"**{result['written']}** cell(s) applied. Download Excel to save the file.")
             st.rerun()
         else:
             toast_success(
@@ -469,7 +664,7 @@ def render_main_table():
     # ── DISPLAY-ONLY TABLE (Stock Holding) ──────────────────────────────────────
     if not display_df.empty:
         with st.expander(
-            f"📊 Stock Holding Reference ({len(display_df['Collection'].unique())} collections — read-only)",
+            f"Stock Holding Reference ({len(display_df['Collection'].unique())} collections, read-only)",
             expanded=False,
         ):
             disp_show = display_df[show_cols + internal_cols_ext].reset_index(drop=True)
@@ -543,7 +738,7 @@ def render_detail_tab():
     col_labels_25 = [f"{m}'{RY2} (ref)" for m in MONTHS]
 
     st.markdown(
-        f'<div class="section-title">📋  {collection} — Monthly Breakdown</div>',
+        f'<div class="section-title">{collection} — Monthly Breakdown</div>',
         unsafe_allow_html=True,
     )
 
@@ -565,7 +760,7 @@ def render_detail_tab():
                 f"padding:3px 10px;border-radius:5px;font-size:11px;font-weight:600;"
                 f"margin:10px 0 4px 0;border:1px dashed #B0BEC5;"
             )
-            tag_suffix = " ◀ read-only"
+            tag_suffix = " read-only"
         else:
             tag_style = (
                 f"background:{color};color:white;display:inline-block;"
@@ -611,7 +806,7 @@ def render_detail_tab():
         # 2025 reference row
         row_25 = st.columns(14)
         row_25[0].markdown(
-            f"<span style='color:#999'>{REF_YEAR} ◀</span>",
+            f"<span style='color:#999'>{REF_YEAR} ref</span>",
             unsafe_allow_html=True,
         )
         for i, month in enumerate(MONTHS):
@@ -631,7 +826,7 @@ def render_detail_tab():
 
     # Display-only metrics (Stock Holding)
     st.markdown(
-        '<div class="section-title" style="margin-top:18px;">📊 Stock Holding (read-only)</div>',
+        '<div class="section-title" style="margin-top:18px;">Stock Holding (read-only)</div>',
         unsafe_allow_html=True,
     )
     for metric in DISPLAY_METRICS:
@@ -644,28 +839,134 @@ def render_detail_tab():
 
 
 # ─── Analytics section ─────────────────────────────────────────────────────────
-def render_analytics():
-    data = st.session_state.data
-    if data is None:
-        return
-    kpis = compute_kpis(data, edit_year=EDIT_YEAR)
+def render_overview():
+    df = _filtered_df()
+    kpis = _current_kpis(df)
+    exceptions = _exception_frame(df)
+    changes = _pending_changes()
 
-    with st.expander("📈 Analytics Dashboard", expanded=True):
-        render_kpi_cards(kpis)
+    render_kpi_cards(kpis)
+    st.markdown("")
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        c_bar, c_pie = st.columns([3, 2])
-
-        with c_bar:
-            fig_bar = planned_monthly_chart(kpis, year=EDIT_YEAR)
-            st.plotly_chart(fig_bar, use_container_width=True)
-
-        with c_pie:
+    c_main, c_side = st.columns([2.2, 1])
+    with c_main:
+        chart_a, chart_b = st.columns([1.35, 1])
+        with chart_a:
+            st.plotly_chart(planned_monthly_chart(kpis, year=EDIT_YEAR), use_container_width=True)
+        with chart_b:
             fig_pie = planned_by_category_chart(kpis)
             if fig_pie:
                 st.plotly_chart(fig_pie, use_container_width=True)
             else:
                 st.info("No planned purchase data yet.")
+
+        st.markdown('<div class="section-title">Planning Grid Preview</div>', unsafe_allow_html=True)
+        preview = df[df["_editable"] == True].copy()
+        if preview.empty:
+            st.info("No editable rows match the current filters.")
+        else:
+            preview[TOTAL_COL_26] = preview[MONTH_COLS_26].sum(axis=1)
+            st.dataframe(
+                preview[["Collection", "Category", "Segment", "Metric", TOTAL_COL_26]].head(14),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    with c_side:
+        st.markdown('<div class="section-title">Workbench Status</div>', unsafe_allow_html=True)
+        st.markdown(
+            f"""
+            <div class="workbench-panel">
+                <div class="source-pill">{_source_summary()}</div>
+                <div style="height:12px"></div>
+                <div class="kpi-label">Pending edits</div>
+                <div class="kpi-value">{len(changes)}</div>
+                <div class="kpi-subtext">Use Plan Entry to review and save.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.markdown('<div class="section-title">Top Exceptions</div>', unsafe_allow_html=True)
+        if exceptions.empty:
+            st.success("No planning exceptions found for the current filters.")
+        else:
+            for _, row in exceptions.head(6).iterrows():
+                sev = str(row["Severity"]).lower()
+                st.markdown(
+                    f"""
+                    <div class="exception-item exception-{sev}">
+                        <div class="exception-title">{row['Issue']}</div>
+                        <div class="exception-meta">{row['Collection']} · {row['Category']} · {row['Segment']}</div>
+                        <div class="exception-meta">{row['Detail']}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+
+def render_exceptions():
+    df = _filtered_df()
+    exceptions = _exception_frame(df)
+    st.markdown(
+        '<div class="section-title">Exceptions</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("Use this list to decide what to edit first. It is calculated from the current filtered plan.")
+    if exceptions.empty:
+        st.success("No exceptions found.")
+        return
+
+    severity_order = {"High": 0, "Medium": 1, "Low": 2}
+    exceptions["_sort"] = exceptions["Severity"].map(severity_order).fillna(9)
+    exceptions = exceptions.sort_values(["_sort", "Collection"]).drop(columns="_sort")
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("High", int((exceptions["Severity"] == "High").sum()))
+    c2.metric("Medium", int((exceptions["Severity"] == "Medium").sum()))
+    c3.metric("Total", len(exceptions))
+    st.dataframe(exceptions, use_container_width=True, hide_index=True)
+
+
+def render_source_export():
+    st.markdown('<div class="section-title">Source & Export</div>', unsafe_allow_html=True)
+    st.markdown(
+        f"""
+        <div class="workbench-panel">
+            <div class="kpi-label">Current source</div>
+            <div style="font-size:16px;font-weight:700;color:#0F172A">{_source_summary()}</div>
+            <div class="kpi-subtext">Google Sheets are imported as Excel exports. Saving updates the in-app workbook bytes; download the file after applying changes.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown("")
+    col_save, col_download = st.columns([1, 1])
+    with col_save:
+        label = "Apply Changes" if st.session_state.cloud_mode else "Save to Excel"
+        if st.button(label, type="primary", use_container_width=True, key="source_save_btn"):
+            handle_save()
+    with col_download:
+        dl_bytes = st.session_state.get("download_bytes")
+        if st.session_state.cloud_mode and dl_bytes:
+            st.download_button(
+                "Download Excel",
+                data=dl_bytes,
+                file_name=st.session_state.uploaded_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="source_dl_btn",
+            )
+        elif st.session_state.cloud_mode:
+            st.button(
+                "Download Excel",
+                disabled=True,
+                use_container_width=True,
+                key="source_dl_btn_off",
+                help="Apply changes first to enable download.",
+            )
+        else:
+            st.info("Local file mode writes directly to the selected workbook and creates a backup beside it.")
 
 
 # ─── Top header ────────────────────────────────────────────────────────────────
@@ -674,16 +975,16 @@ def render_header():
     changes    = _pending_changes()
 
     # Build sub-strings separately to avoid f-string nesting issues
-    dirty_html   = f'&nbsp;<span class="dirty-badge">&#9998; {len(changes)} pending</span>' if changes else ""
+    dirty_html   = f'&nbsp;<span class="dirty-badge">{len(changes)} pending</span>' if changes else ""
     dry_run_html = "&nbsp;&middot;&nbsp;<b>DRY-RUN ON</b>" if st.session_state.dry_run else ""
 
     header_html = (
         '<div class="otb-header">'
-        f'<h2>&#128202; OTB Planner &nbsp;'
-        f'<span style="font-size:14px;font-weight:400;">2026 Open-to-Buy</span>'
+        f'<h2>OTB Planner &nbsp;'
+        f'<span style="font-size:14px;font-weight:500;color:#475569;">{EDIT_YEAR} Open-to-Buy Workbench</span>'
         f'{dirty_html}</h2>'
-        f'<p style="margin:0;color:#a8b8d8;font-size:12px;">'
-        f'Last saved: {last_saved}{dry_run_html}</p>'
+        f'<p style="margin:6px 0 0;color:#64748B;font-size:12px;">'
+        f'{_source_summary()} &nbsp;&middot;&nbsp; Last saved: {last_saved}{dry_run_html}</p>'
         '</div>'
     )
 
@@ -692,7 +993,7 @@ def render_header():
         st.markdown(header_html, unsafe_allow_html=True)
     with col_btn:
         st.markdown("<br>", unsafe_allow_html=True)
-        label = "💾 Apply Changes" if st.session_state.cloud_mode else "💾 Save to Excel"
+        label = "Apply Changes" if st.session_state.cloud_mode else "Save to Excel"
         if st.button(label, type="primary", use_container_width=True, key="save_btn"):
             handle_save()
     with col_dl:
@@ -700,7 +1001,7 @@ def render_header():
         dl_bytes = st.session_state.get("download_bytes")
         if st.session_state.cloud_mode and dl_bytes:
             st.download_button(
-                "⬇️ Download Excel",
+                "Download Excel",
                 data=dl_bytes,
                 file_name=st.session_state.uploaded_filename,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -708,7 +1009,7 @@ def render_header():
                 key="dl_btn",
             )
         elif st.session_state.cloud_mode:
-            st.button("⬇️ Download Excel", disabled=True,
+            st.button("Download Excel", disabled=True,
                       use_container_width=True, key="dl_btn_off",
                       help="Apply changes first to enable download")
 
@@ -719,16 +1020,37 @@ def _render_upload_screen():
     st.markdown(
         """
         <div style="text-align:center;padding:60px 20px 20px">
-            <div style="font-size:52px">📊</div>
             <h2 style="margin:12px 0 6px">OTB Planner</h2>
-            <p style="color:#666;font-size:15px">Open-to-Buy Planner — AKEMI Retail 2026</p>
+            <p style="color:#64748B;font-size:15px">Open-to-Buy planning workbench for 2026 retail buys</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
     col = st.columns([1, 2, 1])[1]
     with col:
-        st.markdown("#### Upload your OTB Excel file to get started")
+        st.markdown("#### Load your planning source")
+        google_url = st.text_input(
+            "Google Sheet URL",
+            value=st.session_state.google_sheet_url,
+            key="google_sheet_url_main",
+            placeholder="https://docs.google.com/spreadsheets/d/...",
+        )
+        if st.button("Load Google Sheet", type="primary", use_container_width=True, key="load_google_sheet_main"):
+            try:
+                with st.spinner("Downloading Google Sheet as Excel..."):
+                    file_bytes, filename = _download_google_sheet(google_url)
+                st.session_state.google_sheet_url = google_url
+                st.session_state.uploaded_bytes = file_bytes
+                st.session_state.uploaded_filename = filename
+                st.session_state.source_label = "Google Sheet"
+                st.session_state.cloud_mode = True
+                st.session_state._cache_bust += 1
+                load_data()
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+
+        st.markdown("##### Or upload an Excel file")
         uploaded = st.file_uploader(
             "OTB_v2.xlsx",
             type=["xlsx"],
@@ -741,6 +1063,7 @@ def _render_upload_screen():
             file_hash  = hashlib.md5(file_bytes[:4096]).hexdigest()
             st.session_state.uploaded_bytes    = file_bytes
             st.session_state.uploaded_filename = uploaded.name
+            st.session_state.source_label      = "Uploaded Excel"
             st.session_state["_upload_hash"]   = file_hash
             st.session_state.cloud_mode        = True
             st.session_state._cache_bust       += 1
@@ -766,6 +1089,10 @@ def main():
     if st.session_state.data is None:
         load_data(silent=True)
 
+    # If no local workbook exists, open directly from the configured Google Sheet.
+    if st.session_state.data is None:
+        _try_load_default_google_sheet()
+
     # Still no data → show upload screen
     if st.session_state.data is None:
         render_sidebar()
@@ -774,21 +1101,29 @@ def main():
 
     render_sidebar()
     render_header()
-    render_analytics()
-    st.markdown("---")
+    tab_overview, tab_exceptions, tab_plan, tab_detail, tab_source = st.tabs(
+        ["Overview", "Exceptions", "Plan Entry", "Collection Detail", "Source & Export"]
+    )
 
-    tab_data, tab_detail = st.tabs(["📋 Data Entry  ", "🔍 Collection Detail  "])
+    with tab_overview:
+        render_overview()
 
-    with tab_data:
+    with tab_exceptions:
+        render_exceptions()
+
+    with tab_plan:
         st.markdown(
-            '<div class="section-title">2026 Monthly Data (editable) — '
-            'click any Jan\'26–Dec\'26 cell to edit, Tab to advance</div>',
+            '<div class="section-title">Plan Entry</div>',
             unsafe_allow_html=True,
         )
+        st.caption("Edit Jan'26 through Dec'26 cells. Totals and 2025 reference columns are read-only.")
         render_main_table()
 
     with tab_detail:
         render_detail_tab()
+
+    with tab_source:
+        render_source_export()
 
 
 if __name__ == "__main__":
